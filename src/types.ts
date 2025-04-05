@@ -10,11 +10,9 @@ export interface DebateState {
   duration: number;
   messages: DebateMessage[];
   isDebating: boolean;
-  winner: 'gemini' | 'qroq' | 'tie' | null;  // Allow 'tie' as a valid value for winner
+  winner: 'gemini' | 'qroq' | 'tie' | null;
   geminiPoints: number;
   qroqPoints: number;
+  timeLeft: number;  // Add timeLeft if it's not already in your state
+  isLoading: boolean; // Add the isLoading property
 }
-
-
-
-
