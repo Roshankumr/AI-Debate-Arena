@@ -24,6 +24,10 @@ interface DebateState {
   groqPoints: number;
   timeLeft: number;
   debateRound: number;
+  stance: {
+    gemini: "favor" | "oppose" | null;
+    groq: "favor" | "oppose" | null;
+  };
 }
 
 export default function App() {
@@ -37,6 +41,7 @@ export default function App() {
     groqPoints: 0,
     timeLeft: 2 * 60,
     debateRound: 0,
+    stance: { gemini: null, groq: null },
   });
 
   const isDebatingRef = useRef(state.isDebating);
@@ -71,14 +76,27 @@ export default function App() {
     scrollToBottom();
   }, [state.messages]);
 
+  const assignStances = (): {
+    gemini: "favor" | "oppose";
+    groq: "favor" | "oppose";
+  } => {
+    const favorFirst = Math.random() > 0.5;
+    return {
+      gemini: favorFirst ? "favor" : "oppose",
+      groq: favorFirst ? "oppose" : "favor",
+    };
+  };
+
   const getGeminiChatCompletion = async (messages: DebateMessage[]) => {
     try {
-      let prompt = `You are Gemini, an AI engaged in a debate about: "${state.topic}". Provide well-reasoned arguments with evidence. Be concise, clear, and logical.`;
+      let prompt = `You are Gemini, an AI engaged in a debate about: "${state.topic}".\nYour stance is to ${state.stance.gemini} the topic.\nRespond with concise, human-understandable arguments (no more than 4 sentences). Provide strong, well-reasoned points and clear logic.`;
 
       if (messages.length > 0) {
         prompt += "\n\nHere's the conversation so far:\n";
-        messages.forEach(msg => {
-          prompt += `${msg.agent === "gemini" ? "You (Gemini)" : "Opponent (Groq)"}: ${msg.message}\n\n`;
+        messages.forEach((msg) => {
+          prompt += `${
+            msg.agent === "gemini" ? "You (Gemini)" : "Opponent (Groq)"
+          }: ${msg.message}\n\n`;
         });
         prompt += "Now provide your next argument or counter-argument:";
       } else {
@@ -102,18 +120,19 @@ export default function App() {
       const formattedMessages = [
         {
           role: "system",
-          content: `You are Groq, an AI designed to engage in structured, data-driven debates. Your goal is to provide well-reasoned, fact-based arguments about "${state.topic}". Always back up your claims with real-world data, research, or examples. Engage respectfully and challenge the opponent's logic when appropriate, but maintain a professional tone throughout the debate.`,
+          content: `You are Groq, an AI debating the topic: "${state.topic}". You are arguing to ${state.stance.groq} the topic. Stick to your side throughout the debate. Limit your answer to 4 sentences with clear, data-driven, or example-based logic.`,
         },
-        ...messages.map(msg => ({
+        ...messages.map((msg) => ({
           role: msg.agent === "groq" ? "assistant" : "user",
           content: msg.message,
         })),
         {
           role: "user",
-          content: messages.length === 0
-            ? `Start a debate on the topic: "${state.topic}". Present your opening arguments.`
-            : "Provide your next argument or counter-argument in this debate."
-        }
+          content:
+            messages.length === 0
+              ? `Start a debate on the topic: "${state.topic}". Present your opening arguments.`
+              : "Provide your next argument or counter-argument in this debate.",
+        },
       ];
 
       const response = await axios.post(
@@ -137,44 +156,99 @@ export default function App() {
         }
       );
 
-      return response.data?.choices[0]?.message?.content || "No response from Groq";
+      return (
+        response.data?.choices[0]?.message?.content || "No response from Groq"
+      );
     } catch (error) {
       console.error("Groq API Error:", error);
       return "Error fetching response from Groq.";
     }
   };
 
-  const calculatePoints = (message: string, allMessages: DebateMessage[], isGroq: boolean) => {
-    let points = 0;
-    const agent = isGroq ? "groq" : "gemini";
-
-    if (message.length > 100) points += 3;
-    if (message.length > 200) points += 2;
-
-    if (message.match(/research shows|studies indicate|according to|evidence suggests|for example|such as/gi)) {
-      points += 5;
-    }
-
-    const opponentMessages = allMessages.filter(msg => msg.agent !== agent);
-    if (opponentMessages.length > 0) {
-      const lastOpponentMessage = opponentMessages[opponentMessages.length - 1].message.toLowerCase();
-      const keywords = lastOpponentMessage.match(/\b\w{5,}\b/g) || [];
-      const addressedPoints = keywords.filter(word => message.toLowerCase().includes(word)).length;
-      points += Math.min(addressedPoints, 5);
-    }
-
-    if (message.match(/first|second|third|finally|in conclusion|therefore|thus|as a result/gi)) {
-      points += 3;
-    }
-
-    const topicKeywords = state.topic.toLowerCase().split(" ");
-    const relevancePoints = topicKeywords.filter(word => word.length > 3 && message.toLowerCase().includes(word)).length;
-    points += relevancePoints;
-
-    return points;
+  // Criterion 1: Clarity of Argument
+  const scoreClarity = (message: string): number => {
+    const clarityIndicators =
+      /first|second|third|finally|in conclusion|therefore|thus|as a result|however|on the other hand|although/gi;
+    const count = (message.match(clarityIndicators) || []).length;
+    return Math.min(count * 2, 10); // Score up to 10
   };
 
-  const calculateWinner = (geminiPoints: number, groqPoints: number) => {
+  // Criterion 2: Depth of Reasoning
+  const scoreDepth = (message: string): number => {
+    const depthIndicators =
+      /autonomy|moral|philosophy|belief|value|nuance|complex|context|principle|assumption|framework|diversity/gi;
+    const count = (message.match(depthIndicators) || []).length;
+    return Math.min(count * 2, 10); // Score up to 10
+  };
+
+  // Criterion 3: Use of Evidence & Examples
+  const scoreEvidence = (message: string): number => {
+    const evidenceIndicators =
+      /research shows|studies indicate|according to|evidence suggests|data from|statistically|survey|report|study/gi;
+    const exampleIndicators =
+      /for example|such as|consider|case study|instance|take the case of/gi;
+    const evidenceCount = (message.match(evidenceIndicators) || []).length;
+    const exampleCount = (message.match(exampleIndicators) || []).length;
+    return Math.min(evidenceCount * 3 + exampleCount * 2, 10); // Score up to 10
+  };
+
+  // Criterion 4: Relevance & Realism
+  const scoreRelevance = (message: string, topic: string): number => {
+    const topicKeywords = topic.toLowerCase().split(" ");
+    const lowerMessage = message.toLowerCase();
+    const relevanceCount = topicKeywords.filter(
+      (word) => word.length > 3 && lowerMessage.includes(word)
+    ).length;
+    return Math.min(relevanceCount * 2, 10); // Score up to 10
+  };
+
+  // Criterion 5: Persuasiveness / Impact
+  const scorePersuasiveness = (
+    message: string,
+    allMessages: DebateMessage[],
+    isGroq: boolean
+  ): number => {
+    const agent = isGroq ? "groq" : "gemini";
+    const lowerMessage = message.toLowerCase();
+    const opponentMessages = allMessages.filter((msg) => msg.agent !== agent);
+
+    if (opponentMessages.length === 0) return 5;
+
+    const lastOpponentMessage =
+      opponentMessages[opponentMessages.length - 1].message.toLowerCase();
+    const rebuttalKeywords = lastOpponentMessage.match(/\b\w{5,}\b/g) || [];
+    const rebuttals = rebuttalKeywords.filter((word) =>
+      lowerMessage.includes(word)
+    ).length;
+
+    if (rebuttals >= 5) return 10;
+    if (rebuttals >= 3) return 7;
+    if (rebuttals >= 1) return 5;
+    return 3;
+  };
+
+  // Final total scorer (max 50 points)
+  const calculatePoints = (
+    message: string,
+    allMessages: DebateMessage[],
+    isGroq: boolean,
+    topic: string
+  ): number => {
+    const clarity = scoreClarity(message);
+    const depth = scoreDepth(message);
+    const evidence = scoreEvidence(message);
+    const relevance = scoreRelevance(message, topic);
+    const persuasiveness = scorePersuasiveness(message, allMessages, isGroq);
+
+    const total = clarity + depth + evidence + relevance + persuasiveness;
+    return Math.min(total, 50);
+  };
+
+  // Winner calculator
+  const calculateWinner = (
+    geminiPoints: number,
+    groqPoints: number
+  ): "gemini" | "groq" | "tie" => {
     if (geminiPoints > groqPoints) return "gemini";
     if (groqPoints > geminiPoints) return "groq";
     return "tie";
@@ -183,41 +257,47 @@ export default function App() {
   const runDebateRound = async () => {
     try {
       let currentMessages = [...state.messages];
-  
-      // Step 1: Gemini replies
       const geminiResponse = await getGeminiChatCompletion(currentMessages);
-      const geminiPoints = calculatePoints(geminiResponse, currentMessages, false);
-  
+      const geminiPoints = calculatePoints(
+        geminiResponse,
+        currentMessages,
+        false,
+        state.topic
+      );
+
       const geminiMessage: DebateMessage = {
         agent: "gemini",
         message: geminiResponse,
         type: "ai",
         timestamp: new Date().toISOString(),
       };
-  
+
       currentMessages = [...currentMessages, geminiMessage];
-      setState(prev => ({
+      setState((prev) => ({
         ...prev,
-        messages:[...prev.messages, geminiMessage],
+        messages: [...prev.messages, geminiMessage],
         geminiPoints: prev.geminiPoints + geminiPoints,
         debateRound: prev.debateRound + 1,
       }));
-  
-      // Step 2: wait a bit before Groq's turn
-      await new Promise(resolve => setTimeout(resolve, 3000));
-  
-      // Step 3: Groq replies
+
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+
       const groqResponse = await getGroqChatCompletion(currentMessages);
-      const groqPoints = calculatePoints(groqResponse, currentMessages, true);
-  
+      const groqPoints = calculatePoints(
+        groqResponse,
+        currentMessages,
+        true,
+        state.topic
+      );
+
       const groqMessage: DebateMessage = {
         agent: "groq",
         message: groqResponse,
         type: "ai",
         timestamp: new Date().toISOString(),
       };
-  
-      setState(prev => ({
+
+      setState((prev) => ({
         ...prev,
         messages: [...prev.messages, groqMessage],
         groqPoints: prev.groqPoints + groqPoints,
@@ -227,12 +307,12 @@ export default function App() {
       console.error("Debate round error:", error);
     }
   };
-  
 
   const startDebate = async () => {
     if (!state.topic || state.isDebating) return;
+    const stanceAssignment = assignStances();
 
-    setState(prev => ({
+    setState((prev) => ({
       ...prev,
       isDebating: true,
       messages: [],
@@ -241,6 +321,7 @@ export default function App() {
       groqPoints: 0,
       timeLeft: state.duration * 60,
       debateRound: 0,
+      stance: stanceAssignment,
     }));
 
     setTimeout(() => {
@@ -250,9 +331,7 @@ export default function App() {
 
   const debateLoop = async () => {
     if (!isDebatingRef.current || timeLeftRef.current <= 0) return;
-
     await runDebateRound();
-
     setTimeout(() => {
       if (isDebatingRef.current && timeLeftRef.current > 0) {
         debateLoop();
@@ -267,16 +346,17 @@ export default function App() {
 
   useEffect(() => {
     if (!state.isDebating) {
-      setState(prev => ({
+      setState((prev) => ({
         ...prev,
         timeLeft: state.duration * 60,
       }));
     }
   }, [state.duration, state.isDebating]);
 
+  // Full React return section for AI Debate Arena with stance reveal, debate log, and winner banner
+
   return (
     <div className="min-h-screen bg-[#0A0F1C] text-gray-100 flex flex-col">
-      {/* Header */}
       <header className="bg-[#111827]/50 backdrop-blur-sm border-b border-gray-800 py-4 px-6 fixed w-full top-0 z-10">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center space-x-3">
@@ -287,14 +367,19 @@ export default function App() {
           </div>
           <div className="flex items-center space-x-4">
             <div className="flex items-center space-x-2">
-              <span className="text-sm font-medium">Gemini: {state.geminiPoints}</span>
+              <span className="text-sm font-medium">
+                Gemini: {state.geminiPoints}
+              </span>
               <span className="text-sm text-gray-400">|</span>
-              <span className="text-sm font-medium">Groq: {state.groqPoints}</span>
+              <span className="text-sm font-medium">
+                Groq: {state.groqPoints}
+              </span>
             </div>
             <div className="flex items-center space-x-2">
               <Timer className="w-4 h-4 text-gray-400" />
               <span className="text-sm text-gray-400">
-                {Math.floor(state.timeLeft / 60)}:{String(state.timeLeft % 60).padStart(2, '0')}
+                {Math.floor(state.timeLeft / 60)}:
+                {String(state.timeLeft % 60).padStart(2, "0")}
               </span>
               <select
                 value={state.duration}
@@ -318,10 +403,25 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 pt-24 pb-24">
+        {state.isDebating && state.debateRound === 0 && state.stance.gemini && (
+          <div className="fixed top-24 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-blue-400/20 to-purple-400/20 p-4 border border-gray-700 rounded-xl shadow-xl backdrop-blur-md animate-fade-in-down z-10">
+            <p className="text-center text-lg font-semibold">
+              🤖 Gemini will argue in{" "}
+              <span className="text-blue-400">
+                {state.stance.gemini?.toUpperCase() ?? ""}
+              </span>{" "}
+              of the topic.
+              <br />⚡ Groq will argue in{" "}
+              <span className="text-purple-400">
+                {state.stance.groq?.toUpperCase() ?? ""}
+              </span>{" "}
+              of the topic.
+            </p>
+          </div>
+        )}
+
         <div className="h-full rounded-lg overflow-hidden bg-[#1C2333] border border-gray-800 shadow-xl">
-          {/* Messages Container */}
           <div className="h-[calc(100vh-16rem)] overflow-y-auto p-6 space-y-4">
             {state.messages.length === 0 && (
               <div className="flex flex-col items-center justify-center h-full text-gray-400">
@@ -332,18 +432,22 @@ export default function App() {
             {state.messages.map((msg, i) => (
               <div
                 key={i}
-                className={`flex ${msg.agent === "gemini" ? "justify-start" : "justify-end"}`}
+                className={`flex ${
+                  msg.agent === "gemini" ? "justify-start" : "justify-end"
+                }`}
               >
                 <div
-                  className={`max-w-[80%] rounded-2xl p-4 ${msg.agent === "gemini"
-                    ? "bg-blue-500/20 border border-blue-500/30"
-                    : "bg-purple-500/20 border border-purple-500/30"
+                  className={`max-w-[80%] rounded-2xl p-4 ${
+                    msg.agent === "gemini"
+                      ? "bg-blue-500/20 border border-blue-500/30"
+                      : "bg-purple-500/20 border border-purple-500/30"
                   }`}
                 >
                   <div className="flex items-center mb-2">
                     <Bot className="w-5 h-5 mr-2" />
                     <span className="font-medium">
-                      {msg.agent === "gemini" ? "Gemini" : "Groq"}
+                      {msg.agent === "gemini" ? "Gemini" : "Groq"} (
+                      {state.stance[msg.agent]?.toUpperCase() ?? ""})
                     </span>
                   </div>
                   <ReactMarkdown className="prose prose-invert max-w-none prose-p:leading-relaxed prose-p:my-1">
@@ -355,8 +459,10 @@ export default function App() {
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Input Form */}
-          <form onSubmit={handleSubmit} className="border-t border-gray-800 bg-[#111827] p-4">
+          <form
+            onSubmit={handleSubmit}
+            className="border-t border-gray-800 bg-[#111827] p-4"
+          >
             <div className="max-w-4xl mx-auto flex gap-3">
               <input
                 type="text"
@@ -389,14 +495,17 @@ export default function App() {
           </form>
         </div>
 
-        {/* Winner Banner */}
         {state.winner && (
           <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-gradient-to-r from-yellow-500/20 to-amber-500/20 border border-yellow-500/30 rounded-lg p-4 backdrop-blur-sm">
             <div className="flex items-center gap-3">
               <Bot className="w-6 h-6 text-yellow-400" />
               <span className="font-medium">
-                {state.winner === "tie" ? "It's a tie!" : `${state.winner === "gemini" ? "Gemini" : "Groq"} won the debate!`} 
-                {" "}({state.geminiPoints} - {state.groqPoints})
+                {state.winner === "tie"
+                  ? "It's a tie!"
+                  : `${
+                      state.winner === "gemini" ? "Gemini" : "Groq"
+                    } won the debate!`}
+                ({state.geminiPoints} - {state.groqPoints})
               </span>
             </div>
           </div>
